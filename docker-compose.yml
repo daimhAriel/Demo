@@ -1,0 +1,14 @@
+version: "3.8"
+
+services:
+  intel-monitor:
+    build: .
+    container_name: evtol-intel-monitor
+    ports:
+      - "8501:8501"
+    volumes:
+      # 持久化 SQLite 数据库到宿主机
+      - ./data:/app/data
+    environment:
+      - TZ=Asia/Shanghai
+    restart: unless-stopped

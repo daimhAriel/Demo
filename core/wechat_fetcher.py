@@ -74,13 +74,19 @@ def search_accounts(keyword: str, api_key: str, begin: int = 0) -> list[dict]:
 
 # ── 公开函数：校验 API Key 是否有效（UI 用） ──
 
-def check_api_key(api_key: str) -> bool:
-    """验证 API Key 是否有效（随便搜个常见关键词，看返回）"""
+def check_api_key(api_key: str) -> dict:
+    """验证 API Key 是否有效（随便搜个常见关键词，看返回）
+
+    Returns:
+        {"valid": bool, "message": str}
+    """
     try:
         accounts = _search_accounts("36氪", api_key, 0, 1)
-        return isinstance(accounts, list)
-    except Exception:
-        return False
+        if isinstance(accounts, list):
+            return {"valid": True, "message": f"API Key 有效，共 {len(accounts)} 条结果"}
+        return {"valid": False, "message": "返回数据格式异常"}
+    except Exception as e:
+        return {"valid": False, "message": str(e)}
 
 
 # ── 公开异步生成器：分页获取文章（pipeline 用） ──

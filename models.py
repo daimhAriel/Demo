@@ -42,6 +42,9 @@ class SiteConfig(BaseModel):
     # RSS / Feed
     feed_url: str = ""
 
+    # 微信公众号
+    wechat_fakeid: str = ""              # 公众号 fakeid（用于 API 拉取文章）
+
     # LLM
     topic: str = ""
     llm_model: str = "gpt-4o-mini"

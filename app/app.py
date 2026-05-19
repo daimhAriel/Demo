@@ -221,12 +221,54 @@ def site_config_form(
         )
         source_type = c1.selectbox(
             "源类型",
-            ["company", "media", "policy"],
+            ["company", "media", "policy", "wechat"],
             index=0 if not defaults or defaults.source_type == "company"
-                   else 1 if defaults.source_type == "media" else 2,
+                   else 1 if defaults.source_type == "media"
+                   else 2 if defaults.source_type == "policy"
+                   else 3,
             key=f"{prefix}_source_type",
-            help="company=企业官网(不过滤), media=垂类媒体(LLM过滤+公司归属), policy=政策法规",
+            help="company=企业官网, media=垂类媒体, policy=政策法规, wechat=微信公众号",
         )
+
+        # ── 微信公众号搜索 ──
+        if source_type == "wechat":
+            wechat_key_cfg = db.get_app_config("wechat_api_key") or ""
+            if not wechat_key_cfg:
+                st.warning("请先在系统设置中配置微信公众号 API Key")
+            else:
+                search_kw = st.text_input(
+                    "搜索公众号", placeholder="输入关键词...",
+                    key=f"{prefix}_wechat_search",
+                )
+                if search_kw and st.button("搜索", key=f"{prefix}_wechat_search_btn"):
+                    with st.spinner("正在搜索..."):
+                        try:
+                            from core.wechat_fetcher import search_accounts
+                            results = search_accounts(search_kw, wechat_key_cfg)
+                            if not results:
+                                st.info("未找到匹配的公众号")
+                            st.session_state[f"{prefix}_wechat_results"] = results
+                        except Exception as e:
+                            st.error(f"搜索失败: {e}")
+
+                cached = st.session_state.get(f"{prefix}_wechat_results", [])
+                if cached:
+                    selected_fakeid = st.radio(
+                        "选择公众号",
+                        options=[a["fakeid"] for a in cached],
+                        format_func=lambda fid: next(
+                            (f"{a.get('nickname','')} ({a.get('alias','')})"
+                             for a in cached if a["fakeid"] == fid), fid
+                        ),
+                        key=f"{prefix}_wechat_select",
+                    )
+                    st.session_state[f"{prefix}_wechat_fakeid"] = selected_fakeid
+                    sel = next((a for a in cached if a["fakeid"] == selected_fakeid), None)
+                    if sel:
+                        st.caption(f"已选择: {sel.get('nickname','')}")
+                        if sel.get("round_head_img"):
+                            st.image(sel["round_head_img"], width=60)
+                    st.info("URL/选择器字段无需填写，保存后系统自动通过 API 拉取文章")
 
         # ── 探测按钮区 ──
         probe_key = f"{prefix}_probe"
@@ -566,6 +608,7 @@ def site_config_form(
             "alt_content_selector": alt_content_sel,
             "detail_title_selector": detail_title_sel,
             "feed_url": feed_url_input,
+            "wechat_fakeid": st.session_state.get(f"{prefix}_wechat_fakeid", defaults.wechat_fakeid if defaults else ""),
         }
 
 
@@ -590,6 +633,7 @@ def build_site_config(data: dict, site_id: str = "") -> SiteConfig:
         detail_title_selector=data.get("detail_title_selector") or None,
         follow_detail=data["follow_detail"],
         feed_url=data.get("feed_url", ""),
+        wechat_fakeid=data.get("wechat_fakeid", ""),
         delay_min=data["delay_min"],
         delay_max=data["delay_max"],
         cron_expr=data["cron_expr"],
@@ -945,8 +989,8 @@ elif page == "站点管理":
         else:
             for idx, site in enumerate(sites):
                 with st.container():
-                    stype_icon = {"company": "building", "media": "newspaper", "policy": "law"}
-                    stype_label = {"company": "企业", "media": "媒体", "policy": "政策"}
+                    stype_icon = {"company": "building", "media": "newspaper", "policy": "law", "wechat": "chat-dots"}
+                    stype_label = {"company": "企业", "media": "媒体", "policy": "政策", "wechat": "微信"}
                     status = "🟢" if site.enabled else "🔴"
                     src_type = getattr(site, "source_type", "company") or "company"
                     src_icon = stype_icon.get(src_type, "building")
@@ -1779,6 +1823,32 @@ else:
                     st.success(f"✅ {ch} 测试成功！")
                 else:
                     st.error(f"❌ {ch} 发送失败: {res}")
+
+    st.divider()
+
+    st.subheader("📱 微信公众号 API")
+    st.caption("通过 [mptext.top](https://down.mptext.top/dashboard/api) 抓取公众号文章")
+
+    wechat_key = db.get_app_config("wechat_api_key") or ""
+    wechat_key_input = st.text_input(
+        "API Key", value=wechat_key, type="password",
+        placeholder="登录 mptext.top 后获取", key="wechat_api_key_input",
+    )
+
+    col1, col2 = st.columns([1, 3])
+    if col1.button("保存 Key", key="save_wechat_key"):
+        db.set_app_config("wechat_api_key", wechat_key_input)
+        st.success("已保存")
+        st.rerun()
+
+    if wechat_key_input and col2.button("验证 Key", key="verify_wechat_key"):
+        from core.wechat_fetcher import check_api_key
+        with st.spinner("正在验证..."):
+            result = check_api_key(wechat_key_input)
+        if result["valid"]:
+            st.success("Key 有效")
+        else:
+            st.error(result["message"])
 
     st.divider()
 

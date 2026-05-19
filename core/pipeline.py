@@ -8,6 +8,7 @@ from core.database import DatabaseHandler
 from core.crawler import CrawlerManager
 from core.llm import LLMProcessor
 from core.notifier import Notifier
+from core.wechat_fetcher import fetch_articles
 from models import SiteConfig
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,75 @@ class PipelineOrchestrator:
         # 确定源类型
         source_type = getattr(config, "source_type", "company") or "company"
 
+        # ── 微信公众号 → 走 API 抓取，不走网页爬虫 ──
+        if source_type == "wechat":
+            wechat_key = self.db.get_app_config("wechat_api_key")
+            if not wechat_key:
+                logger.warning(f"[{config.name}] 未配置微信公众号 API Key，跳过")
+                print(f"  [!] {config.name}: 请先在系统设置中配置微信公众号 API Key")
+                return 0
+
+            async for raw_page in fetch_articles(
+                fakeid=config.wechat_fakeid,
+                api_key=wechat_key,
+                site_id=config.id,
+                known_urls=known_urls,
+                last_seen_url=config.last_seen_url,
+                max_pages=config.max_pages or 10,
+            ):
+                crawled += 1
+                fp = DatabaseHandler.make_fingerprint(raw_page.source_url, raw_page.raw_text)
+                if self.db.is_duplicate(fp):
+                    logger.debug(f"  跳过重复: {raw_page.source_url}")
+                    last_url = raw_page.source_url
+                    continue
+
+                if self.llm.is_configured:
+                    topic = config.topic or "eVTOL and low-altitude economy"
+                    standard_cats = self._get_standard_categories("company")
+                    item = await self.llm.process(
+                        raw_page, topic, standard_cats,
+                        source_type="company", companies=companies,
+                    )
+                    if item is None:
+                        logger.debug(f"  LLM标记为无关: {raw_page.title}")
+                        continue
+                else:
+                    from models import IntelItem, normalize_time
+                    from core.classifier import classify
+                    raw_time = raw_page.time_snippet or raw_page.title
+                    event_time = normalize_time(raw_time)
+                    category = classify(raw_page.title, raw_page.raw_text)
+                    item = IntelItem(
+                        fingerprint=fp,
+                        summary=raw_page.title,
+                        event_time=event_time,
+                        category=category,
+                        source_url=raw_page.source_url,
+                        site_id=raw_page.site_id,
+                        raw_title=raw_page.title,
+                        clean_title="",
+                        company="",
+                        crawled_at=raw_page.crawled_at,
+                    )
+
+                if self.db.save_intel(item):
+                    new_count += 1
+                    last_url = raw_page.source_url
+                    print(f"  [+] [{item.category}] {item.summary}")
+                    print(f"     {raw_page.source_url}")
+                    self.notifier.send(item, site_name=config.name)
+
+            # 更新增量标记
+            if last_url:
+                config.last_seen_url = last_url
+                config.last_crawled_at = datetime.now()
+                self.db.save_site(config)
+
+            logger.info(f"[{config.name}] 完成: 抓取 {crawled} 条, 新增 {new_count} 条")
+            return new_count
+
+        # ── 网页站点 → 走爬虫 ──
         async for raw_page in self.crawler.crawl_site(config, known_urls=known_urls):
             crawled += 1
             # 去重检查
